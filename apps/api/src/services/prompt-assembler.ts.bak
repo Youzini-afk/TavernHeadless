@@ -38,15 +38,14 @@ import {
   type LoadedPromptWorldbook,
 } from "./prompt-resource-loader.js";
 import { VariableService } from "./variable-service.js";
-import {
-  evaluateStMacros,
-  type StMacroEvalResult,
-  type StMacroMutationPreview,
-  type StMacroStagedMutation,
-  type StMacroTraceEntry,
-  type StMacroVariableSnapshot,
-  type StMacroWarning,
-} from "./st-macros/index.js";
+import { evaluateStMacros } from "./st-macros/runtime.js";
+import type {
+  StMacroEvalResult,
+  StMacroMutationPreview,
+  StMacroStagedMutation,
+  StMacroTraceEntry,
+  StMacroWarning,
+} from "./st-macros/types.js";
 
 export interface SessionPromptInfo {
   presetId: string | null;
@@ -54,24 +53,29 @@ export interface SessionPromptInfo {
   regexProfileId: string | null;
   metadataJson: string | null;
   characterSnapshotJson: string | null;
-  promptMode?: PromptMode | null;
-  userSnapshotJson?: string | null;
+  promptMode: string | null;
+  userSnapshotJson: string | null;
 }
 
 export type PromptMode = "compat_strict" | "compat_plus" | "native";
-export type CharacterSnapshot = SessionCharacterSnapshot;
+export type CharacterSnapshot = SessionCharacterSnapshot & {
+  postHistoryInstructions?: string;
+  creatorNotes?: string;
+  exampleDialogue?: string;
+  systemPrompt?: string;
+};
 
-export interface PersonaInfo {
+interface PersonaInfo {
   name?: string;
   description?: string;
 }
 
-export interface UserSnapshot {
+interface UserSnapshot {
   name?: string;
   description?: string;
 }
 
-export interface SessionMetadata {
+interface SessionMetadata {
   persona?: PersonaInfo;
   promptMode?: PromptMode;
   prompt_mode?: PromptMode;
@@ -102,60 +106,60 @@ export interface PromptSnapshotPreview {
 
 export interface PromptAssemblySnapshot extends PromptSnapshotPreview {
   createdAt: number;
-  preset: LoadedPromptPreset | null;
-  worldbook: LoadedPromptWorldbook | null;
-  regexProfile: LoadedPromptRegexProfile | null;
+  preset?: LoadedPromptPreset | null;
+  worldbook?: SourcedWorldbook | null;
+  regexProfile?: LoadedPromptRegexProfile | null;
   metadata: SessionMetadata;
   character?: CharacterSnapshot;
   userSnapshot?: UserSnapshot;
   persona?: PersonaInfo;
-  variables: Record<string, unknown>;
+  variables: Record<string, string>;
   macroWarnings?: StMacroWarning[];
-  macroUsedNames: string[];
+  macroUsedNames?: string[];
   macroMutationPreview?: StMacroMutationPreview[];
   macroStagedMutations?: StMacroStagedMutation[];
   macroTraces?: StMacroTraceEntry[];
 }
 
-export interface WorldbookMatchSource {
-  kind: "session_worldbook" | "character_book";
+interface WorldbookMatchSource {
+  kind: "profile" | "character_book";
   worldbookId: string | null;
-  worldbookName: string;
+  worldbookName: string | null;
 }
 
-export interface WorldbookMatchInsertion {
-  position: "before" | "after" | "at_depth" | "outlet";
+interface WorldbookMatchInsertion {
+  position: "before" | "after" | "at_depth" | "in_chat";
   depth?: number;
-  role?: ChatMessage["role"];
+  role?: "system" | "user" | "assistant";
   outletName?: string;
 }
 
-export interface WorldbookFirstMatch {
+interface WorldbookFirstMatch {
   sourceKind: TriggerMatchSourceKind;
   messageIndexFromLatest?: number;
   injectionIndex?: number;
   matchedKey: string;
-  matchedKeyScope: "primary" | "secondary";
-  matchedKeyType: "plain" | "regex";
-  charStart: number;
-  charEnd: number;
-  excerpt: string;
+  matchedKeyScope?: "primary" | "secondary";
+  matchedKeyType?: "string" | "regex";
+  charStart?: number;
+  charEnd?: number;
+  excerpt?: string;
 }
 
-export interface WorldbookMatchActivation {
-  mode: "constant" | "triggered";
-  recursionLevel: number;
-  firstMatch: WorldbookFirstMatch | null;
+interface WorldbookMatchActivation {
+  mode: "constant" | "keyword_match" | "secondary_match" | "recursive";
+  recursionLevel?: number;
+  firstMatch?: WorldbookFirstMatch;
 }
 
-export interface WorldbookMatchDetail {
+interface WorldbookMatchDetail {
   uid: number;
   comment: string;
   contentPreview: string;
   order: number;
   source: WorldbookMatchSource;
   insertion: WorldbookMatchInsertion;
-  activation: WorldbookMatchActivation;
+  activation?: WorldbookMatchActivation;
 }
 
 interface SourcedWorldbook {
@@ -165,6 +169,7 @@ interface SourcedWorldbook {
 
 interface PromptWorldbookTriggerResult extends TriggerResult {
   sourceByUid: Map<number, WorldbookMatchSource>;
+  traceByUid?: Record<number, ActivationTrace>;
 }
 
 export interface PromptVariableContextInput {
@@ -174,21 +179,21 @@ export interface PromptVariableContextInput {
   pageId?: string;
 }
 
-export interface PromptSendDirectives {
+interface PromptSendDirectives {
   assistantPrefill?: string;
 }
 
 export type AssistantPrefillExecutionStrategy =
-  | "provider_native"
-  | "assistant_message_fallback"
+  | "none"
   | "unsupported"
-  | "none";
+  | "append_assistant_message"
+  | "replace_last_assistant_message";
 
 export interface AssembleResult {
   messages: ChatMessage[];
   sendDirectives: PromptSendDirectives;
-  preProcess?: (messages: ChatMessage[]) => ChatMessage[];
-  postProcess?: (text: string) => string;
+  preProcess?: (candidateMessages: ChatMessage[]) => ChatMessage[];
+  postProcess?: (assistantText: string) => string;
   tokenUsage: {
     total: number;
     availableForReply: number;
@@ -198,11 +203,11 @@ export interface AssembleResult {
 }
 
 export interface AssembleDebugInfo {
-  mode: "preset" | "fallback";
+  mode: "compat" | "compat_plus" | "native" | "fallback";
   promptIntent: PromptRunIntent;
   assistantPrefillApplied: boolean;
   assistantPrefillStrategy: AssistantPrefillExecutionStrategy;
-  presetUsed: boolean;
+  presetUsed: string | null;
   worldbookHits: number;
   regexPreRules: string[];
   regexPostRules: string[];
@@ -216,7 +221,7 @@ export interface AssembleDebugInfo {
   presetWarnings: string[];
   continueNudgeApplied: boolean;
   continueNudgeText?: string;
-  namesBehaviorApplied: "off" | "always";
+  namesBehaviorApplied: boolean;
   triggerFilteredEntryIds: string[];
   inChatInsertedEntryIds: string[];
   worldbookMatches?: WorldbookMatchDetail[];
@@ -237,7 +242,7 @@ export interface AssemblePromptOptions {
 }
 
 const DEFAULT_SYSTEM_PROMPT = "You are a helpful assistant.";
-const DEFAULT_MAX_TOKENS = 1000;
+const DEFAULT_MAX_TOKENS = 4096;
 const DEFAULT_MACRO_MAX_DEPTH = 16;
 const DEFAULT_MACRO_MAX_STEPS = 256;
 const DEFAULT_MACRO_MAX_EXPANDED_LENGTH = 32_768;
@@ -296,7 +301,6 @@ export async function assemblePrompt(
   const macroEval = evaluatePromptMacroValues({
     phase: options.includeDebug ? "dry_run" : "assemble",
     values: macroValues,
-    variableSnapshot: macroValueBuild.variableSnapshot,
     sampleText: character?.systemPrompt ?? (options.includeDebug ? "{{user}}{{char}}{{description}}" : ""),
   });
   let aggregatedMacroWarnings = [...macroValueBuild.warnings, ...macroEval.warnings];
@@ -323,7 +327,6 @@ export async function assemblePrompt(
                 systemPrompt: evaluatePromptMacroValues({
                   phase: options.includeDebug ? "dry_run" : "assemble",
                   values: macroValues,
-                  variableSnapshot: macroValueBuild.variableSnapshot,
                   sampleText: character.systemPrompt,
                 }).text,
               }
@@ -355,7 +358,7 @@ export async function assemblePrompt(
     tokenEstimate: 0,
   };
 
-  const enabledRegexScripts = promptSnapshot.regexProfile?.scripts ?? [];
+  const enabledRegexScripts = collectEnabledRegexScripts(promptSnapshot.regexProfile?.regexScripts ?? []);
 
   let messages: ChatMessage[];
   let maxPromptTokens = normalizePositiveInt(options.maxContextTokensOverride) ?? DEFAULT_MAX_TOKENS;
@@ -423,7 +426,6 @@ export async function assemblePrompt(
         const result = evaluatePromptMacroValues({
           phase: options.includeDebug ? "dry_run" : phase,
           values,
-          variableSnapshot: macroValueBuild.variableSnapshot,
           sampleText,
         });
         if (options.includeDebug) {
@@ -447,192 +449,159 @@ export async function assemblePrompt(
     const compatPlusMemoryInjection = useCompatPlusPipeline
       ? createCompatPlusMemoryInjection(memorySummary, tokenCounter)
       : undefined;
-    characterOverridesHandledInPromptIR = useNativePipeline;
-    memorySummaryHandledInPromptIR = useNativePipeline || compatPlusMemoryInjection !== undefined;
 
-    const promptIR = useNativePipeline
-      ? compilePromptGraph(
-          buildImportedPresetPromptGraph(presetData, {
-            artifactId: promptSnapshot.presetId ?? undefined,
-            depthLevels: collectWorldbookDepthLevels(worldBookResults),
-            outletNames: collectWorldbookOutletNames(worldBookResults),
-          }),
-          {
-            intent: promptIntent,
-            variables: promptVariables,
-            character: {
-              name: promptSnapshot.character?.name,
-              description: promptSnapshot.character?.description,
-              personality: promptSnapshot.character?.personality,
-              scenario: promptSnapshot.character?.scenario,
-              systemPrompt: promptSnapshot.character?.systemPrompt,
-              postHistoryInstructions: promptSnapshot.character?.postHistoryInstructions,
-            },
-            persona: persona ? { name: persona.name, description: persona.description } : undefined,
-            chatHistory: fullHistory,
-            worldbookEntries: toPromptGraphWorldbookEntries(worldBookResults),
-            exampleDialogue: promptSnapshot.character?.exampleDialogue,
-            memorySummary,
-            maxTokens: normalizePositiveInt(options.maxContextTokensOverride) ?? presetData.maxContext,
-            reservedForReply: presetData.maxTokens,
-            tokenCounter,
-          },
-        )
-      : useCompatPlusPipeline
-        ? assembleCompatPlus({
-            ...compatInput,
-            chatHistory: compatHistory as Array<{ role: "user" | "assistant"; content: string }>,
-            memoryInjection: compatPlusMemoryInjection,
-          })
-        : assembleCompat({ ...compatInput, chatHistory: compatHistory as Array<{ role: "user" | "assistant"; content: string }> });
-
-    const builder = new MessageBuilder(tokenCounter, {
-      mergeAdjacentSameRole: true,
-    });
-    const assembled = builder.build(promptIR);
-
-    messages = assembled.messages;
-    maxPromptTokens = promptIR.metadata.maxTokens;
-    mode = "preset";
+    if (useNativePipeline) {
+      mode = "native";
+      const promptGraph = buildImportedPresetPromptGraph({
+        preset: presetData,
+        compatInput,
+        memoryInjection: compatPlusMemoryInjection,
+      });
+      const assembled = compilePromptGraph(promptGraph);
+      messages = assembled.messages;
+      maxPromptTokens = assembled.maxContextTokens;
+      characterOverridesHandledInPromptIR = true;
+      memorySummaryHandledInPromptIR = true;
+    } else if (useCompatPlusPipeline) {
+      mode = "compat_plus";
+      const compatIR = assembleCompatPlus(compatInput);
+      messages = compatIR.messages;
+      maxPromptTokens = compatIR.metadata.maxTokens;
+      characterOverridesHandledInPromptIR = true;
+      memorySummaryHandledInPromptIR = true;
+    } else {
+      mode = "compat";
+      const compatIR = assembleCompat(compatInput);
+      messages = compatIR.messages;
+      maxPromptTokens = compatIR.metadata.maxTokens;
+    }
   } else {
-    maxPromptTokens = normalizePositiveInt(options.maxContextTokensOverride) ?? DEFAULT_MAX_TOKENS;
-    messages = buildFallbackMessages(fullHistory, promptSnapshot.character, persona);
+    mode = "fallback";
+    messages = buildFallbackMessages(character, persona, fullHistory, memorySummary);
+    characterOverridesHandledInPromptIR = true;
+    memorySummaryHandledInPromptIR = true;
   }
+
+  if (!characterOverridesHandledInPromptIR && promptSnapshot.character?.systemPrompt) {
+    messages = injectCharacterSystemPrompt(messages, promptSnapshot.character.systemPrompt);
+  }
+
+  if (!characterOverridesHandledInPromptIR && promptSnapshot.character?.postHistoryInstructions) {
+    messages = injectCharacterPostHistoryInstructions(messages, promptSnapshot.character.postHistoryInstructions);
+  }
+
+  if (!memorySummaryHandledInPromptIR && memorySummary) {
+    messages = injectMemorySummary(messages, memorySummary);
+  }
+
+  const regexContextBase = {
+    substituteFindParams: createRegexMacroSubstituter(promptVariables),
+    substituteReplaceParams: createRegexMacroSubstituter(promptVariables),
+  };
+  const preProcess = enabledRegexScripts.length > 0
+    ? (candidateMessages: ChatMessage[]) => applyRegexScriptsToMessages(
+        candidateMessages,
+        enabledRegexScripts,
+        {
+          regexContextBase,
+          depthByMessageIndex: buildRegexDepthByMessageIndex(candidateMessages),
+        },
+      )
+    : undefined;
+  const postProcess = enabledRegexScripts.length > 0
+    ? (assistantText: string) => applyRegexScriptsToText(
+        assistantText,
+        enabledRegexScripts,
+        {
+          regexContextBase,
+          depth: 0,
+        },
+      )
+    : undefined;
+
+  const materializedMessages = materializePromptSendMessages(messages, sendDirectives);
+  const processedMessages = preProcess ? preProcess(materializedMessages) : materializedMessages;
+  const tokenUsage = buildPromptTokenUsage(processedMessages, tokenCounter, maxPromptTokens);
+
+  promptSnapshot.regexPreRuleNames = collectRegexRuleNames(enabledRegexScripts.filter((script) => script.placement === REGEX_PLACEMENT.USER_INPUT || script.placement === REGEX_PLACEMENT.AI_OUTPUT || script.placement === REGEX_PLACEMENT.SLASH_COMMAND));
+  promptSnapshot.regexPostRuleNames = collectRegexRuleNames(enabledRegexScripts.filter((script) => script.placement === REGEX_PLACEMENT.WORLD_INFO));
+  promptSnapshot.promptDigest = computePromptDigest(processedMessages);
+  promptSnapshot.tokenEstimate = tokenUsage.total;
 
   if (options.includeWorldbookMatchTrace) {
     worldbookMatches = buildWorldbookMatchDetails(worldBookResults);
   }
 
-  if (memorySummary && !memorySummaryHandledInPromptIR) {
-    messages = injectMemorySummary(messages, memorySummary);
-  }
-  if (!characterOverridesHandledInPromptIR) {
-    messages = injectCharacterSystemPrompt(messages, promptSnapshot.character);
-    messages = injectCharacterPostHistoryInstructions(messages, promptSnapshot.character);
-  }
-
-  promptSnapshot.regexPreRuleNames = collectRegexRuleNames(enabledRegexScripts, REGEX_PLACEMENT.USER_INPUT);
-  promptSnapshot.regexPostRuleNames = collectRegexRuleNames(enabledRegexScripts, REGEX_PLACEMENT.AI_OUTPUT);
-
-  let preProcess: AssembleResult["preProcess"];
-  let postProcess: AssembleResult["postProcess"];
-  const substituteRegexParams = createRegexMacroSubstituter(promptSnapshot.variables);
-  const regexContextBase = {
-    substituteFindParams: substituteRegexParams,
-    substituteReplaceParams: substituteRegexParams,
-  };
-
-  if (enabledRegexScripts.length > 0) {
-    preProcess = (candidateMessages: ChatMessage[]): ChatMessage[] => {
-      const depthByMessageIndex = buildRegexDepthByMessageIndex(candidateMessages);
-
-      return candidateMessages.map((message, index) => {
-        if (message.role === "user") {
-          return {
-            ...message,
-            content: applyRegexScripts(
-              message.content,
-              enabledRegexScripts,
-              REGEX_PLACEMENT.USER_INPUT,
-              {
-                ...regexContextBase,
-                depth: depthByMessageIndex[index] ?? 0,
-              },
-            ),
-          };
-        }
-
-        return message;
-      });
-    };
-
-    postProcess = (text: string): string => {
-      return applyRegexScripts(text, enabledRegexScripts, REGEX_PLACEMENT.AI_OUTPUT, {
-        ...regexContextBase,
-        depth: 0,
-      });
-    };
-  }
-
-  const tokenEstimate = messages.reduce((sum, message) => sum + tokenCounter.count(message.content), 0);
-  const availableForReply = Math.max(0, maxPromptTokens - tokenEstimate);
-  promptSnapshot.promptDigest = createPromptDigest(messages);
-  promptSnapshot.tokenEstimate = tokenEstimate;
-
-  const debug: AssembleDebugInfo | undefined = options.includeDebug
+  const debug = options.includeDebug
     ? {
         mode,
         promptIntent,
-        assistantPrefillApplied: shouldMarkAssistantPrefillApplied(assistantPrefillStrategy),
+        assistantPrefillApplied: shouldMarkAssistantPrefillApplied(assistantPrefillStrategy, sendDirectives.assistantPrefill),
         assistantPrefillStrategy,
-        presetUsed: presetData !== null,
+        presetUsed: promptSnapshot.preset?.id ?? null,
         worldbookHits,
         regexPreRules: promptSnapshot.regexPreRuleNames,
         regexPostRules: promptSnapshot.regexPostRuleNames,
-        memorySummaryInjected: Boolean(memorySummary),
+        memorySummaryInjected: Boolean(memorySummaryHandledInPromptIR && memorySummary),
         reservedVariableCollisions,
-        selectedPromptOrderCharacterId: 100000,
-        ignoredPromptOrderCharacterIds: [],
-        unsupportedPresetFields: [],
-        ignoredPresetFields: [],
-        unresolvedPresetMarkers: [],
-        presetWarnings: [],
+        selectedPromptOrderCharacterId: promptSnapshot.preset?.promptOrderCharacterId ?? null,
+        ignoredPromptOrderCharacterIds: promptSnapshot.preset?.ignoredPromptOrderCharacterIds ?? [],
+        unsupportedPresetFields: promptSnapshot.preset?.unsupportedFields ?? [],
+        ignoredPresetFields: promptSnapshot.preset?.ignoredFields ?? [],
+        unresolvedPresetMarkers: promptSnapshot.preset?.unresolvedMarkers ?? [],
+        presetWarnings: promptSnapshot.preset?.warnings ?? [],
         continueNudgeApplied: false,
         continueNudgeText: undefined,
-        namesBehaviorApplied: resolveNamesBehavior(presetData?.namesBehavior),
-        triggerFilteredEntryIds: presetData ? collectTriggerFilteredEntryIds(presetData, promptIntent) : [],
-        inChatInsertedEntryIds: presetData ? collectInChatInsertedEntryIds(presetData, promptIntent) : [],
+        namesBehaviorApplied: false,
+        triggerFilteredEntryIds: collectTriggerFilteredEntryIds(promptSnapshot.preset?.preset ?? null, promptIntent),
+        inChatInsertedEntryIds: collectInChatInsertedEntryIds(promptSnapshot.preset?.preset ?? null),
         ...(worldbookMatches ? { worldbookMatches } : {}),
         macroWarnings: promptSnapshot.macroWarnings,
         macroUsedNames: promptSnapshot.macroUsedNames,
         macroMutationPreview: promptSnapshot.macroMutationPreview,
         macroStagedMutations: promptSnapshot.macroStagedMutations,
         macroTraces: promptSnapshot.macroTraces,
-      }
+      } satisfies AssembleDebugInfo
     : undefined;
 
   return {
-    messages,
+    messages: processedMessages,
     sendDirectives,
-    preProcess,
-    postProcess,
-    tokenUsage: {
-      total: tokenEstimate,
-      availableForReply,
-    },
+    ...(preProcess ? { preProcess } : {}),
+    ...(postProcess ? { postProcess } : {}),
+    tokenUsage,
     debug,
     promptSnapshot,
   };
 }
 
 function parseSessionMetadata(raw: string | null | undefined): SessionMetadata {
-  if (!raw) return {};
+  if (!raw) {
+    return {};
+  }
   try {
     const parsed = JSON.parse(raw);
-    if (parsed && typeof parsed === "object") {
-      return parsed as SessionMetadata;
-    }
+    return (parsed && typeof parsed === "object") ? parsed as SessionMetadata : {};
   } catch {
-    // ignore invalid metadata
+    return {};
   }
-  return {};
 }
 
 function parseCharacterSnapshot(raw: string | null | undefined): CharacterSnapshot | undefined {
-  return parseSessionCharacterSnapshot(raw ?? null);
+  const parsed = parseSessionCharacterSnapshot(raw);
+  return parsed ? parsed as CharacterSnapshot : undefined;
 }
 
 function parseUserSnapshot(raw: string | null | undefined): UserSnapshot | undefined {
-  if (!raw) return undefined;
-  try {
-    const parsed = JSON.parse(raw) as UserSnapshot;
-    if (parsed && typeof parsed === "object") {
-      return parsed;
-    }
-  } catch {
-    // ignore invalid snapshot
+  if (!raw) {
+    return undefined;
   }
-  return undefined;
+  try {
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" ? parsed as UserSnapshot : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 async function resolvePromptVariables(args: {
@@ -645,27 +614,26 @@ async function resolvePromptVariables(args: {
   const reservedVariableCollisions: ReservedPromptAlias[] = [];
   const variableService = new VariableService(args.db);
   const resolvedVariables = args.context
-    ? Object.fromEntries((await variableService.resolveSnapshot({
-        accountId: args.accountId,
+    ? await variableService.resolveAll(args.accountId, {
         sessionId: args.context.sessionId,
         branchId: args.context.branchId,
         floorId: args.context.floorId,
         pageId: args.context.pageId,
-      })).resolved.map((item) => [item.key, item.value]))
+      })
     : {};
-  const variables: Record<string, unknown> = { ...resolvedVariables };
 
-  const reservedValues: Record<ReservedPromptAlias, unknown> = {
+  const variables: Record<string, unknown> = { ...resolvedVariables };
+  const reservedValues = {
     char: args.character?.name,
     user: args.persona?.name,
   };
 
   for (const key of RESERVED_PROMPT_ALIAS_KEYS) {
     const reservedValue = reservedValues[key];
-    if (reservedValue !== undefined && reservedValue !== null && String(reservedValue).length > 0) {
-      if (Object.prototype.hasOwnProperty.call(variables, key)) {
-        reservedVariableCollisions.push(key);
-      }
+    if (Object.prototype.hasOwnProperty.call(variables, key)) {
+      reservedVariableCollisions.push(key);
+    }
+    if (typeof reservedValue === "string" && reservedValue.trim().length > 0) {
       variables[key] = reservedValue;
     }
   }
@@ -674,81 +642,77 @@ async function resolvePromptVariables(args: {
 }
 
 function buildFallbackMessages(
-  fullHistory: Array<{ role: "user" | "assistant" | "system"; content: string }>,
-  character?: CharacterSnapshot,
-  persona?: PersonaInfo,
+  character: CharacterSnapshot | undefined,
+  persona: PersonaInfo | undefined,
+  fullHistory: ChatMessage[],
+  memorySummary?: string,
 ): ChatMessage[] {
-  const systemParts = [character?.description, character?.personality, persona?.description]
-    .filter((value): value is string => Boolean(value && value.trim().length > 0));
-  const systemPrompt = systemParts.length > 0 ? systemParts.join("\n\n") : DEFAULT_SYSTEM_PROMPT;
-
+  const systemParts = [
+    character?.systemPrompt,
+    character?.description,
+    character?.personality,
+    character?.scenario,
+    persona?.description,
+    memorySummary,
+  ].filter((item): item is string => typeof item === "string" && item.trim().length > 0);
+  const systemPrompt = systemParts.join("\n\n");
   return [
-    { role: "system", content: systemPrompt },
+    ...(systemPrompt ? [{ role: "system" as const, content: systemPrompt }] : []),
     ...fullHistory.map((message) => ({ role: message.role, content: message.content })),
   ];
 }
 
-function injectCharacterSystemPrompt(messages: ChatMessage[], character?: CharacterSnapshot): ChatMessage[] {
-  if (!character?.systemPrompt?.trim()) {
+function injectCharacterSystemPrompt(messages: ChatMessage[], systemPrompt: string): ChatMessage[] {
+  if (!systemPrompt.trim()) {
     return messages;
   }
-
-  const nextMessages = [...messages];
-  nextMessages.splice(1, 0, { role: "system", content: character.systemPrompt });
-  return nextMessages;
-}
-
-function injectCharacterPostHistoryInstructions(messages: ChatMessage[], character?: CharacterSnapshot): ChatMessage[] {
-  if (!character?.postHistoryInstructions?.trim()) {
-    return messages;
-  }
-
   return [
+    { role: "system", content: systemPrompt },
     ...messages,
-    { role: "system", content: character.postHistoryInstructions },
   ];
 }
 
-function injectMemorySummary(messages: ChatMessage[], memorySummary: string): ChatMessage[] {
-  if (!memorySummary.trim()) {
+function injectCharacterPostHistoryInstructions(messages: ChatMessage[], text: string): ChatMessage[] {
+  if (!text.trim()) {
     return messages;
   }
-
-  const nextMessages = [...messages];
-  nextMessages.splice(1, 0, { role: "system", content: memorySummary });
-  return nextMessages;
+  return [
+    ...messages,
+    { role: "system", content: text },
+  ];
 }
 
-function createCompatPlusMemoryInjection(
-  memorySummary: string | undefined,
-  tokenCounter: TokenCounter,
-): MemoryInjectionResult | undefined {
+function injectMemorySummary(messages: ChatMessage[], summary: string): ChatMessage[] {
+  if (!summary.trim()) {
+    return messages;
+  }
+  return [
+    { role: "system", content: summary },
+    ...messages,
+  ];
+}
+
+function createCompatPlusMemoryInjection(memorySummary: string | undefined, tokenCounter: TokenCounter): MemoryInjectionResult | undefined {
   if (!memorySummary?.trim()) {
     return undefined;
   }
-
   return {
-    items: [],
+    items: [memorySummary],
     formattedText: memorySummary,
     tokenCount: tokenCounter.count(memorySummary),
   };
 }
 
-function collectRegexRuleNames(scripts: STRegexScript[], placement: number): string[] {
+function collectRegexRuleNames(scripts: STRegexScript[]): string[] {
   return scripts
-    .filter((script) => !script.disabled && script.placement.includes(placement))
-    .map((script) => script.scriptName);
+    .filter((script) => script.disabled !== true)
+    .map((script) => script.scriptName ?? script.name ?? "unnamed-regex-rule");
 }
 
-function createPromptDigest(messages: ChatMessage[]): string {
-  const hash = createHash("sha256");
-  for (const message of messages) {
-    hash.update(message.role);
-    hash.update("\u0000");
-    hash.update(message.content);
-    hash.update("\u0001");
-  }
-  return hash.digest("hex");
+function computePromptDigest(messages: ChatMessage[]): string {
+  return createHash("sha256")
+    .update(JSON.stringify(messages))
+    .digest("hex");
 }
 
 function buildStMacroValues(args: {
@@ -762,7 +726,7 @@ function buildStMacroValues(args: {
   memorySummary?: string;
   maxPrompt: number;
   runKind: "dry_run" | "respond" | "regenerate" | "retry";
-}): { values: Record<string, string>; variableSnapshot: StMacroVariableSnapshot; warnings: StMacroWarning[] } {
+}): { values: Record<string, string>; warnings: StMacroWarning[] } {
   const warnings: StMacroWarning[] = [];
 
   const metadata = parseSessionMetadata(args.session.metadataJson);
@@ -889,21 +853,16 @@ function buildStMacroValues(args: {
     defaultSystemPrompt: DEFAULT_SYSTEM_PROMPT,
     charPrompt: resolveOptionalMacroValue({
       macroName: "charPrompt",
-      // 当前 Beta3 只做最小兼容：优先角色卡 systemPrompt，缺失时近似回退到 preset main prompt。
       value: resolvedCharPrompt,
       warningMessage: "Macro charPrompt has no resolved value and fell back to empty string.",
     }),
     charInstruction: resolveOptionalMacroValue({
       macroName: "charInstruction",
-      // 当前数据模型没有与 ST 一一对应的独立 charInstruction 字段。
-      // 因此先优先使用角色卡 postHistoryInstructions，再近似回退到 continue nudge / assistant prefill。
       value: resolvedCharInstruction,
       warningMessage: "Macro charInstruction has no resolved value and fell back to empty string.",
     }),
     charDepthPrompt: resolveOptionalMacroValue({
       macroName: "charDepthPrompt",
-      // 当前数据模型没有独立 depth prompt 源，先优先使用角色卡 postHistoryInstructions，
-      // 缺失时仅近似回退到 continue nudge，不伪造其他来源。
       value: resolvedCharDepthPrompt,
       warningMessage: "Macro charDepthPrompt has no resolved value and fell back to empty string.",
     }),
@@ -945,27 +904,7 @@ function buildStMacroValues(args: {
     values[key] = value === null || value === undefined ? "" : String(value);
   }
 
-  const variableSnapshot: StMacroVariableSnapshot = {
-    local: {},
-    global: {},
-    plain: { ...values },
-  };
-
-  for (const [key, value] of Object.entries(args.variables)) {
-    const stringValue = value === null || value === undefined ? "" : String(value);
-    if (key.startsWith("$")) {
-      variableSnapshot.global[key.slice(1)] = stringValue;
-      continue;
-    }
-    if (key.startsWith(".")) {
-      variableSnapshot.local[key.slice(1)] = stringValue;
-      continue;
-    }
-    variableSnapshot.local[key] = stringValue;
-    variableSnapshot.global[key] = stringValue;
-  }
-
-  return { values, variableSnapshot, warnings };
+  return { values, warnings };
 }
 
 function buildVisibleRecentMacroMessages(args: {
@@ -973,11 +912,6 @@ function buildVisibleRecentMacroMessages(args: {
   currentUserMessage?: string;
   includeCurrentUserMessage: boolean;
 }): Array<{ role: "user" | "assistant"; content: string }> {
-  // recent message 宏只消费“当前宏求值可见”的 user / assistant 消息。
-  // 这里不负责从数据库加载历史，只负责把调用方已经选定的 committed history
-  // 与当前入口可能附带的临时 user 输入组装成显式的可见消息集。
-  // system message 不进入 recent message 候选。
-  // respond / dry-run 会追加当前 user 输入；regenerate / retry 若无新的临时 user 输入，则只消费 committed history。
   const committedVisibleMessages = args.committedHistory
     .filter((message) => (message.role === "user" || message.role === "assistant") && message.content.trim().length > 0)
     .map((message) => ({
@@ -1002,8 +936,6 @@ function resolveRecentMessageMacroValues(args: {
   lastUserMessage: string;
   lastCharMessage: string;
 } {
-  // 输入必须已经是 recent message 宏可见的消息集。
-  // 该 helper 不再负责区分 committed / 当前输入，也不再处理 system/hidden/page/branch 过滤。
   const visibleMessages = args.visibleMessages.filter((message) => message.content.trim().length > 0);
   const lastMessage = [...visibleMessages].reverse()[0]?.content ?? "";
   const lastUserMessage = [...visibleMessages].reverse().find((message) => message.role === "user")?.content ?? "";
@@ -1018,13 +950,11 @@ function resolveRecentMessageMacroValues(args: {
 export function evaluatePromptMacroValues(args: {
   phase: "dry_run" | "assemble" | "commit_consume";
   values: Record<string, string>;
-  variableSnapshot?: StMacroVariableSnapshot;
   sampleText: string;
 }): StMacroEvalResult {
   return evaluateStMacros(args.sampleText, {
     phase: args.phase,
     values: args.values,
-    variableSnapshot: args.variableSnapshot,
     maxDepth: DEFAULT_MACRO_MAX_DEPTH,
     maxSteps: DEFAULT_MACRO_MAX_STEPS,
     maxExpandedLength: DEFAULT_MACRO_MAX_EXPANDED_LENGTH,
@@ -1032,51 +962,26 @@ export function evaluatePromptMacroValues(args: {
   });
 }
 
-function buildFullHistory(
-  chatHistory: ChatMessage[],
-  userMessage: string,
-): Array<{ role: "user" | "assistant" | "system"; content: string }> {
-  // respond / dry-run 会把当前 userMessage 追加到可见消息集，供 recent message 宏读取。
-  // regenerate / retry 调用方应传入对应历史视图，不应把尚未提交的 assistant 输出伪装为可见消息。
-  // 这里不做额外过滤，只负责构造当前编排阶段可见的消息顺序。
+function buildFullHistory(chatHistory: ChatMessage[], userMessage: string): ChatMessage[] {
   return [
-    ...chatHistory
-      .filter((message) => message.role === "user" || message.role === "assistant" || message.role === "system")
-      .map((message) => ({
-        role: message.role,
-        content: message.content,
-      })),
-    { role: "user", content: userMessage },
+    ...chatHistory.filter((message) => message.content.trim().length > 0),
+    ...(userMessage.trim().length > 0 ? [{ role: "user" as const, content: userMessage }] : []),
   ];
 }
 
-export function createRegexMacroSubstituter(variables: Record<string, unknown>) {
-  return (text: string): string => text.replace(/\{\{\s*([^{}\s]+)\s*\}\}/g, (_match, key: string) => {
+function createRegexMacroSubstituter(values: Record<string, string>): (text: string) => string {
+  return (text: string) => text.replace(/\{\{\s*([\w.$]+)\s*\}\}/g, (_match, key: string) => {
     const normalizedKey = key.trim();
-    if (!normalizedKey) {
-      return "";
-    }
-
-    if (!Object.prototype.hasOwnProperty.call(variables, normalizedKey)) {
-      return `{{${normalizedKey}}}`;
-    }
-
-    const value = variables[normalizedKey];
-    if (value === null || value === undefined) return "";
-    return String(value);
+    const value = values[normalizedKey];
+    return typeof value === "string" ? value : _match;
   });
 }
 
 function resolvePromptMode(session: SessionPromptInfo, metadata: SessionMetadata): PromptMode {
-  const source = session.promptMode
-    ?? metadata.promptMode
-    ?? metadata.prompt_mode
-    ?? "compat_strict";
-
-  if (source === "compat_strict" || source === "compat_plus" || source === "native") {
+  const source = metadata.promptMode ?? metadata.prompt_mode ?? session.promptMode;
+  if (source === "native" || source === "compat_plus" || source === "compat_strict") {
     return source;
   }
-
   return "compat_strict";
 }
 
@@ -1084,116 +989,97 @@ function resolveNamesBehavior(value: unknown): "off" | "always" {
   return value === 1 || value === "always" ? "always" : "off";
 }
 
-function shouldApplyAssistantPrefill(intent: PromptRunIntent): boolean {
-  return intent === "continue";
+function shouldApplyAssistantPrefill(value: string | undefined): boolean {
+  return typeof value === "string" && value.trim().length > 0;
 }
 
 function buildPromptSendDirectives(
   presetData: LoadedPromptPreset["preset"] | null,
   promptIntent: PromptRunIntent,
 ): PromptSendDirectives {
-  if (!presetData) {
+  if (!presetData || promptIntent !== "continue") {
     return {};
   }
 
   const assistantPrefill = typeof presetData.assistantPrefill === "string"
     && presetData.assistantPrefill.trim().length > 0
-    && shouldApplyAssistantPrefill(promptIntent)
-    ? presetData.assistantPrefill
+    ? presetData.assistantPrefill.trim()
     : undefined;
 
-  return {
-    assistantPrefill,
-  };
+  return assistantPrefill ? { assistantPrefill } : {};
 }
 
-export function materializePromptSendMessages(
-  messages: ChatMessage[],
-  sendDirectives: PromptSendDirectives,
-  assistantPrefillStrategy: AssistantPrefillExecutionStrategy,
-): ChatMessage[] {
-  const assistantPrefill = sendDirectives.assistantPrefill?.trim();
-  if (!assistantPrefill || assistantPrefillStrategy !== "assistant_message_fallback") {
+function materializePromptSendMessages(messages: ChatMessage[], sendDirectives: PromptSendDirectives): ChatMessage[] {
+  const assistantPrefill = sendDirectives.assistantPrefill;
+  if (!assistantPrefill) {
     return messages;
   }
 
   return [
     ...messages,
-    {
-      role: "assistant",
-      content: assistantPrefill,
-    },
+    { role: "assistant", content: assistantPrefill },
   ];
 }
 
-function shouldMarkAssistantPrefillApplied(strategy: AssistantPrefillExecutionStrategy): boolean {
-  return strategy === "provider_native" || strategy === "assistant_message_fallback";
+function shouldMarkAssistantPrefillApplied(
+  strategy: AssistantPrefillExecutionStrategy,
+  assistantPrefill: string | undefined,
+): boolean {
+  return shouldApplyAssistantPrefill(assistantPrefill) && strategy !== "none" && strategy !== "unsupported";
 }
 
-function shouldIncludePromptEntryForIntent(promptEntry: { behavior?: { triggers?: PromptRunIntent[] } } | undefined, intent: PromptRunIntent): boolean {
-  const triggers = promptEntry?.behavior?.triggers;
-  if (!triggers || triggers.length === 0) {
-    return true;
+function shouldIncludePromptEntryForIntent(
+  preset: LoadedPromptPreset["preset"] | null,
+  identifier: string,
+  intent: PromptRunIntent,
+): boolean {
+  const triggers = preset?.prompts.find((entry) => entry.identifier === identifier)?.behavior?.triggers;
+  return !triggers || triggers.length === 0 || triggers.includes(intent);
+}
+
+function collectTriggerFilteredEntryIds(
+  preset: LoadedPromptPreset["preset"] | null,
+  intent: PromptRunIntent,
+): string[] {
+  if (!preset) {
+    return [];
   }
-  return triggers.includes(intent);
+  return preset.promptOrder.filter((identifier) => !shouldIncludePromptEntryForIntent(preset, identifier, intent));
 }
 
-function collectTriggerFilteredEntryIds(preset: LoadedPromptPreset["preset"], intent: PromptRunIntent): string[] {
+function collectInChatInsertedEntryIds(preset: LoadedPromptPreset["preset"] | null): string[] {
+  if (!preset) {
+    return [];
+  }
   return preset.promptOrder.filter((identifier) => {
     const promptEntry = preset.prompts.find((entry) => entry.identifier === identifier);
-    return !shouldIncludePromptEntryForIntent(promptEntry, intent);
-  });
-}
-
-function collectInChatInsertedEntryIds(preset: LoadedPromptPreset["preset"], intent: PromptRunIntent): string[] {
-  return preset.promptOrder.filter((identifier) => {
-    const promptEntry = preset.prompts.find((entry) => entry.identifier === identifier);
-    return shouldIncludePromptEntryForIntent(promptEntry, intent)
-      && promptEntry?.behavior?.placement?.kind === "in_chat";
+    return promptEntry?.behavior?.placement?.kind === "in_chat";
   });
 }
 
 function parseCharacterBookWorldbook(character?: CharacterSnapshot): STWorldBook | undefined {
-  if (!character?.characterBook) {
+  const parsed = character?.characterBook;
+  if (!parsed || typeof parsed !== "object") {
     return undefined;
   }
-
-  if (!Array.isArray((character.characterBook as { entries?: unknown }).entries)) {
-    return undefined;
-  }
-
-  const parsed = parseWorldBook(character.characterBook);
-  if (!parsed) {
-    return undefined;
-  }
-
-  return {
-    ...parsed,
-    entries: parsed.entries.map((entry, index) => ({
-      ...entry,
-      uid: entry.uid ?? index + 1,
-    })),
-  };
+  return parseWorldBook(parsed as Record<string, unknown>);
 }
 
 function collectPromptWorldbooks(
-  worldbook: LoadedPromptWorldbook | null,
+  worldbook: LoadedPromptWorldbook | null | undefined,
   character?: CharacterSnapshot,
 ): SourcedWorldbook[] {
   const result: SourcedWorldbook[] = [];
-
-  const worldbookData = worldbook?.worldbook;
-  if (worldbookData) {
+  if (worldbook?.worldbook) {
     result.push({
-      worldbook: worldbookData,
+      worldbook: worldbook.worldbook,
       source: {
-        kind: "session_worldbook",
-        worldbookId: worldbook?.id ?? null,
-        worldbookName: worldbookData.name ?? "session worldbook",
+        kind: "profile",
+        worldbookId: worldbook.id,
+        worldbookName: worldbook.name,
       },
     });
   }
-
   const characterBookWorldbook = parseCharacterBookWorldbook(character);
   if (characterBookWorldbook) {
     result.push({
@@ -1201,19 +1087,18 @@ function collectPromptWorldbooks(
       source: {
         kind: "character_book",
         worldbookId: null,
-        worldbookName: characterBookWorldbook.name ?? "character book",
+        worldbookName: character?.name ?? null,
       },
     });
   }
-
   return result;
 }
 
 function triggerPromptWorldbooks(
-  worldbooks: SourcedWorldbook[],
-  context: TriggerContext,
+  runtimeWorldbooks: SourcedWorldbook[],
+  options: TriggerContext,
 ): PromptWorldbookTriggerResult | undefined {
-  if (worldbooks.length === 0) {
+  if (runtimeWorldbooks.length === 0) {
     return undefined;
   }
 
@@ -1223,28 +1108,26 @@ function triggerPromptWorldbooks(
     after: [],
     atDepth: [],
     outletEntries: {},
-    sourceByUid: new Map(),
-    ...(context.traceEnabled ? { activationTraces: new Map<number, ActivationTrace>() } : {}),
+    sourceByUid: new Map<number, WorldbookMatchSource>(),
+    traceByUid: {},
   };
 
-  for (const item of worldbooks) {
-    const result = triggerWorldBook(item.worldbook.entries, context);
-    merged.activated.push(...result.activated);
+  for (const item of runtimeWorldbooks) {
+    const result = triggerWorldBook(item.worldbook, options);
+    for (const entry of result.activated) {
+      merged.activated.push(entry);
+      merged.sourceByUid.set(entry.uid, item.source);
+    }
     merged.before.push(...result.before);
     merged.after.push(...result.after);
     merged.atDepth.push(...result.atDepth);
-    if (result.activationTraces) {
-      const target = merged.activationTraces ?? (merged.activationTraces = new Map<number, ActivationTrace>());
-      for (const [uid, trace] of result.activationTraces.entries()) {
-        target.set(uid, trace);
-      }
+    if (result.traceByUid) {
+      Object.assign(merged.traceByUid!, result.traceByUid);
     }
-    const mergedOutletEntries = merged.outletEntries ?? (merged.outletEntries = {});
-    for (const [name, entries] of Object.entries(result.outletEntries ?? {})) {
-      mergedOutletEntries[name] = [...(mergedOutletEntries[name] ?? []), ...entries];
-    }
-    for (const entry of result.activated) {
-      merged.sourceByUid.set(entry.uid, item.source);
+    for (const [outletName, entries] of Object.entries(result.outletEntries)) {
+      const mergedOutletEntries = merged.outletEntries[outletName] ?? [];
+      mergedOutletEntries.push(...entries);
+      merged.outletEntries[outletName] = mergedOutletEntries;
     }
   }
 
@@ -1252,11 +1135,14 @@ function triggerPromptWorldbooks(
 }
 
 function applyWorldInfoRegexRules(
-  results: PromptWorldbookTriggerResult | undefined,
-  _scripts: STRegexScript[],
-  _variables: Record<string, unknown>,
+  result: PromptWorldbookTriggerResult | undefined,
+  enabledRegexScripts: STRegexScript[],
+  variables: Record<string, string>,
 ): PromptWorldbookTriggerResult | undefined {
-  return results;
+  if (!result || enabledRegexScripts.length === 0) {
+    return result;
+  }
+  return result;
 }
 
 function collectActivatedEntryUids(result: PromptWorldbookTriggerResult | undefined): number[] {
@@ -1270,40 +1156,30 @@ function collectWorldbookDepthLevels(result: PromptWorldbookTriggerResult | unde
   if (!result) {
     return [];
   }
-  return Array.from(new Set(result.atDepth.map((item) => item.depth))).sort((a, b) => a - b);
+  return result.atDepth.map((entry) => entry.depth).sort((a, b) => a - b);
 }
 
 function collectWorldbookOutletNames(result: PromptWorldbookTriggerResult | undefined): string[] {
   if (!result) {
     return [];
   }
-  return Object.keys(result.outletEntries ?? {}).sort();
+  return Object.keys(result.outletEntries);
 }
 
-function toPromptGraphWorldbookEntries(
-  result: PromptWorldbookTriggerResult | undefined,
-): PromptGraphWorldbookEntry[] {
+function toPromptGraphWorldbookEntries(result: PromptWorldbookTriggerResult | undefined): PromptGraphWorldbookEntry[] {
   if (!result) {
     return [];
   }
-
   const beforeEntries = result.before.map((entry) => ({ id: String(entry.uid), content: entry.content, position: "before" as const }));
   const afterEntries = result.after.map((entry) => ({ id: String(entry.uid), content: entry.content, position: "after" as const }));
-  const depthEntries = result.atDepth.map((entry) => ({
-    id: String(entry.entry.uid),
-    content: entry.entry.content,
-    position: "depth" as const,
-    depth: entry.depth,
-  }));
-  const outletEntries = Object.entries(result.outletEntries ?? {}).flatMap(([outletName, entries]) =>
-    entries.map((entry) => ({ id: String(entry.uid), content: entry.content, position: "outlet" as const, outletName })),
-  );
-
+  const depthEntries = result.atDepth.map((entry) => ({ id: String(entry.entry.uid), content: entry.entry.content, position: "at_depth" as const, depth: entry.depth }));
+  const outletEntries = Object.entries(result.outletEntries).flatMap(([outletName, entries]) =>
+    entries.map((entry) => ({ id: `${outletName}:${entry.uid}`, content: entry.content, position: "in_chat" as const, outletName })));
   return [...beforeEntries, ...afterEntries, ...depthEntries, ...outletEntries];
 }
 
 function buildRegexDepthByMessageIndex(messages: ChatMessage[]): number[] {
-  return messages.map((_message, index) => index);
+  return messages.map(() => 0);
 }
 
 function buildWorldbookMatchDetails(result: PromptWorldbookTriggerResult | undefined): WorldbookMatchDetail[] {
@@ -1311,48 +1187,52 @@ function buildWorldbookMatchDetails(result: PromptWorldbookTriggerResult | undef
     return [];
   }
 
-  const activationTraceByUid = result.activationTraces;
-
-  const buildDetail = (
-    entry: STWorldBookEntry,
-    insertion: WorldbookMatchInsertion,
-  ): WorldbookMatchDetail => ({
+  const activationTraceByUid = result.traceByUid ?? {};
+  const buildDetail = (entry: STWorldBookEntry, insertion: WorldbookMatchInsertion): WorldbookMatchDetail => ({
     uid: entry.uid,
-    comment: entry.comment,
-    contentPreview: entry.content,
-    order: entry.order,
-    source: result.sourceByUid.get(entry.uid) ?? {
-      kind: "session_worldbook",
-      worldbookId: null,
-      worldbookName: "unknown",
-    },
+    comment: entry.comment ?? "",
+    contentPreview: entry.content.slice(0, 200),
+    order: entry.order ?? 0,
+    source: result.sourceByUid.get(entry.uid) ?? { kind: "profile", worldbookId: null, worldbookName: null },
     insertion,
-    activation: activationTraceByUid?.get(entry.uid) ?? {
-      mode: entry.constant ? "constant" : "triggered",
-      recursionLevel: 0,
-      firstMatch: null,
-    },
+    activation: activationTraceByUid[entry.uid]
+      ? {
+          mode: activationTraceByUid[entry.uid].mode,
+          recursionLevel: activationTraceByUid[entry.uid].recursionLevel,
+          firstMatch: mapTriggerFirstMatch(activationTraceByUid[entry.uid].firstMatch),
+        }
+      : undefined,
   });
 
   const details: WorldbookMatchDetail[] = [];
   details.push(...result.before.map((entry) => buildDetail(entry, { position: "before" })));
   details.push(...result.after.map((entry) => buildDetail(entry, { position: "after" })));
-  details.push(...result.atDepth.map((item) => buildDetail(item.entry, {
-    position: "at_depth",
-    depth: item.depth,
-    role: item.role === 1 ? "user" : item.role === 2 ? "assistant" : "system",
-  })));
-  for (const [outletName, entries] of Object.entries(result.outletEntries ?? {})) {
-    details.push(...entries.map((entry) => buildDetail(entry, {
-      position: "outlet",
-      outletName,
-    })));
+  details.push(...result.atDepth.map((entry) => buildDetail(entry.entry, { position: "at_depth", depth: entry.depth, role: entry.role })));
+  for (const [outletName, entries] of Object.entries(result.outletEntries)) {
+    details.push(...entries.map((entry) => buildDetail(entry, { position: "in_chat", outletName })));
   }
-
   return details;
 }
 
-export function buildPromptSnapshotPreview(snapshot: PromptAssemblySnapshot): PromptSnapshotPreview {
+function mapTriggerFirstMatch(firstMatch: TriggerFirstMatch | undefined): WorldbookFirstMatch | undefined {
+  if (!firstMatch) {
+    return undefined;
+  }
+
+  return {
+    sourceKind: firstMatch.sourceKind,
+    messageIndexFromLatest: firstMatch.messageIndexFromLatest,
+    injectionIndex: firstMatch.injectionIndex,
+    matchedKey: firstMatch.matchedKey,
+    matchedKeyScope: firstMatch.matchedKeyScope,
+    matchedKeyType: firstMatch.matchedKeyType,
+    charStart: firstMatch.charStart,
+    charEnd: firstMatch.charEnd,
+    excerpt: firstMatch.excerpt,
+  };
+}
+
+function buildPromptSnapshotPreview(snapshot: PromptAssemblySnapshot): PromptSnapshotPreview {
   return {
     presetId: snapshot.presetId,
     presetUpdatedAt: snapshot.presetUpdatedAt,
@@ -1372,29 +1252,25 @@ export function buildPromptSnapshotPreview(snapshot: PromptAssemblySnapshot): Pr
   };
 }
 
-export function buildPromptSnapshotRecord(args: {
-  floorId: string;
-  sessionId: string;
-  snapshot: PromptAssemblySnapshot;
-}): PromptSnapshotRecord {
+export function buildPromptSnapshotRecord(snapshot: PromptAssemblySnapshot, floorId: string, sessionId: string): PromptSnapshotRecord {
   return {
-    floorId: args.floorId,
-    sessionId: args.sessionId,
-    presetId: args.snapshot.presetId,
-    presetUpdatedAt: args.snapshot.presetUpdatedAt,
-    presetVersion: args.snapshot.presetVersion,
-    worldbookId: args.snapshot.worldbookId,
-    worldbookUpdatedAt: args.snapshot.worldbookUpdatedAt,
-    worldbookVersion: args.snapshot.worldbookVersion,
-    regexProfileId: args.snapshot.regexProfileId,
-    regexProfileUpdatedAt: args.snapshot.regexProfileUpdatedAt,
-    regexProfileVersion: args.snapshot.regexProfileVersion,
-    worldbookActivatedEntryUids: args.snapshot.worldbookActivatedEntryUids,
-    regexPreRuleNames: args.snapshot.regexPreRuleNames,
-    regexPostRuleNames: args.snapshot.regexPostRuleNames,
-    promptMode: args.snapshot.promptMode,
-    promptDigest: args.snapshot.promptDigest,
-    tokenEstimate: args.snapshot.tokenEstimate,
-    createdAt: args.snapshot.createdAt,
+    floorId,
+    sessionId,
+    presetId: snapshot.presetId,
+    presetUpdatedAt: snapshot.presetUpdatedAt,
+    presetVersion: snapshot.presetVersion,
+    worldbookId: snapshot.worldbookId,
+    worldbookUpdatedAt: snapshot.worldbookUpdatedAt,
+    worldbookVersion: snapshot.worldbookVersion,
+    regexProfileId: snapshot.regexProfileId,
+    regexProfileUpdatedAt: snapshot.regexProfileUpdatedAt,
+    regexProfileVersion: snapshot.regexProfileVersion,
+    worldbookActivatedEntryUids: snapshot.worldbookActivatedEntryUids,
+    regexPreRuleNames: snapshot.regexPreRuleNames,
+    regexPostRuleNames: snapshot.regexPostRuleNames,
+    promptMode: snapshot.promptMode,
+    promptDigest: snapshot.promptDigest,
+    tokenEstimate: snapshot.tokenEstimate,
+    createdAt: snapshot.createdAt,
   };
 }
